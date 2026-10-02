@@ -11,7 +11,7 @@ type CheckoutBody = {
   items?: CartEntry[];
 };
 
-function isText(value: unknown, maxLength: number) {
+function isText(value: unknown, maxLength: number): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.trim().length <= maxLength;
 }
 
@@ -29,10 +29,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid order details." }, { status: 400 });
   }
 
+  const { email, fullName, address, city, postalCode } = body;
   if (
-    typeof body.email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email) ||
-    !isText(body.fullName, 120) || !isText(body.address, 240) ||
-    !isText(body.city, 100) || !isText(body.postalCode, 32) ||
+    typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+    !isText(fullName, 120) || !isText(address, 240) ||
+    !isText(city, 100) || !isText(postalCode, 32) ||
     !Array.isArray(body.items) || body.items.length < 1 || body.items.length > 40
   ) {
     return NextResponse.json({ error: "Check your contact, delivery, and bag details." }, { status: 400 });
@@ -74,11 +75,11 @@ export async function POST(request: Request) {
   const total = subtotal + shipping;
 
   const { data: orderId, error: orderError } = await supabase.rpc("create_shop_order", {
-    customer_email: body.email.trim().toLowerCase(),
-    customer_name: body.fullName.trim(),
-    shipping_address: body.address.trim(),
-    shipping_city: body.city.trim(),
-    shipping_postal_code: body.postalCode.trim(),
+    customer_email: email.trim().toLowerCase(),
+    customer_name: fullName.trim(),
+    shipping_address: address.trim(),
+    shipping_city: city.trim(),
+    shipping_postal_code: postalCode.trim(),
     order_subtotal: subtotal,
     shipping_amount: shipping,
     order_total: total,
@@ -90,8 +91,8 @@ export async function POST(request: Request) {
   }
 
   const emailSent = await sendConfirmationEmail({
-    email: body.email.trim(),
-    name: body.fullName.trim(),
+    email: email.trim(),
+    name: fullName.trim(),
     orderId: String(orderId),
     items: orderItems,
     total,
