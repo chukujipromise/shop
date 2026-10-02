@@ -1,15 +1,11 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { eq } from "drizzle-orm";
+import { db } from "../../../../db";
+import { shoppingCarts } from "../../../../db/schema";
 import { products } from "@/lib/products";
 
 type CartLine = { productId: string; quantity: number };
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function getSupabase() {
-  const url = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  return url && key ? createClient(url, key, { auth: { persistSession: false } }) : null;
-}
 
 function isCartLine(value: unknown): value is CartLine {
   if (!value || typeof value !== "object") return false;
@@ -24,15 +20,13 @@ function isCartLine(value: unknown): value is CartLine {
 export async function GET(request: Request) {
   const id = new URL(request.url).searchParams.get("id");
   if (!id || !uuidPattern.test(id)) return NextResponse.json({ error: "Invalid cart." }, { status: 400 });
-  const supabase = getSupabase();
-  if (!supabase) return NextResponse.json({ error: "Cart storage is not configured." }, { status: 503 });
-
-  const { data, error } = await supabase.from("shopping_carts").select("items").eq("id", id).maybeSingle();
-  if (error) {
-    console.error("Cart lookup failed", error.message);
+  try {
+    const [cart] = await db.select({ items: shoppingCarts.items }).from(shoppingCarts).where(eq(shoppingCarts.id, id));
+    return NextResponse.json({ items: cart?.items ?? [] });
+  } catch (error) {
+    console.error("Cart lookup failed", error);
     return NextResponse.json({ error: "Cart storage is unavailable." }, { status: 503 });
   }
-  return NextResponse.json({ items: data?.items ?? [] });
 }
 
 export async function PUT(request: Request) {
@@ -48,12 +42,13 @@ export async function PUT(request: Request) {
   ) {
     return NextResponse.json({ error: "Invalid cart." }, { status: 400 });
   }
-  const supabase = getSupabase();
-  if (!supabase) return NextResponse.json({ error: "Cart storage is not configured." }, { status: 503 });
-
-  const { error } = await supabase.from("shopping_carts").upsert({ id: body.id, items: body.items, updated_at: new Date().toISOString() });
-  if (error) {
-    console.error("Cart save failed", error.message);
+  const items = body.items as CartLine[];
+  try {
+    await db.insert(shoppingCarts)
+      .values({ id: body.id, items, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: shoppingCarts.id, set: { items, updatedAt: new Date() } });
+  } catch (error) {
+    console.error("Cart save failed", error);
     return NextResponse.json({ error: "Cart storage is unavailable." }, { status: 503 });
   }
   return NextResponse.json({ ok: true });

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useCart } from "@/components/cart-provider";
 import { products } from "@/lib/products";
-import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { AuthError, getUser, login, logout, MissingIdentityError, oauthLogin, onAuthChange, signup } from "@netlify/identity";
 
 const categories = ["All pieces", "Desk", "Audio", "Travel"];
 
@@ -24,71 +24,60 @@ function ShopContent() {
   );
 
   useEffect(() => {
-    const supabase = getSupabaseBrowserClient();
-    if (!supabase) return;
-    supabase.auth.getSession().then(({ data }) => setSignedInAs(data.session?.user.email ?? ""));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSignedInAs(session?.user.email ?? "");
-    });
-    return () => subscription.unsubscribe();
+    getUser().then((user) => setSignedInAs(user?.email ?? ""));
+    return onAuthChange((_event, user) => setSignedInAs(user?.email ?? ""));
   }, []);
 
-  async function signInWithGoogle() {
-    const supabase = getSupabaseBrowserClient();
-    if (!supabase) {
-      setAuthError("Add your Supabase project keys to .env.local to enable sign-in.");
-      return;
+  function describeAuthError(error: unknown) {
+    if (error instanceof MissingIdentityError) return "Sign-in is not available right now.";
+    if (error instanceof AuthError) {
+      if (error.status === 401) return "Invalid email or password.";
+      if (error.status === 403) return "New sign-ups are currently closed.";
+      return error.message;
     }
+    return "Something went wrong. Please try again.";
+  }
 
-    setAuthBusy(true);
+  function signInWithGoogle() {
     setAuthError("");
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: `${window.location.origin}/auth/callback`, queryParams: { prompt: "select_account" } },
-    });
-    if (error) {
-      setAuthError(error.message);
-      setAuthBusy(false);
+    try {
+      oauthLogin("google");
+    } catch (error) {
+      setAuthError(describeAuthError(error));
     }
   }
 
   async function submitCredentials(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const supabase = getSupabaseBrowserClient();
-    if (!supabase) {
-      setAuthError("Add your Supabase project keys to .env.local to enable sign-in.");
-      return;
-    }
-
     setAuthBusy(true);
     setAuthError("");
-    const result = authMode === "sign-in"
-      ? await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword })
-      : await supabase.auth.signUp({
-          email: authEmail,
-          password: authPassword,
-          options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
-        });
-
-    setAuthBusy(false);
-    if (result.error) {
-      setAuthError(result.error.message);
-      return;
+    try {
+      if (authMode === "sign-in") {
+        const user = await login(authEmail, authPassword);
+        setSignedInAs(user.email ?? authEmail);
+      } else {
+        const user = await signup(authEmail, authPassword);
+        if (!user.confirmedAt) {
+          setAuthError("Check your email for a confirmation link to finish creating your account.");
+          return;
+        }
+        setSignedInAs(user.email ?? authEmail);
+      }
+      setAuthOpen(false);
+      setAuthPassword("");
+    } catch (error) {
+      setAuthError(describeAuthError(error));
+    } finally {
+      setAuthBusy(false);
     }
-    if (authMode === "sign-up" && !result.data.session) {
-      setAuthError("Check your email for a confirmation link to finish creating your account.");
-      return;
-    }
-    setSignedInAs(result.data.user?.email ?? authEmail);
-    setAuthOpen(false);
-    setAuthPassword("");
   }
 
   async function signOut() {
-    const supabase = getSupabaseBrowserClient();
-    if (!supabase) return;
-    const { error } = await supabase.auth.signOut();
-    if (error) setNotice(error.message);
+    try {
+      await logout();
+    } catch (error) {
+      setNotice(describeAuthError(error));
+    }
   }
 
   function addToBag(productId: string) {

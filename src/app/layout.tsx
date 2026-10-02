@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { DM_Sans, Playfair_Display } from "next/font/google";
+import { AuthCallbackHandler } from "@/components/auth-callback-handler";
 import { CartProvider } from "@/components/cart-provider";
 import "./globals.css";
 
@@ -26,7 +27,9 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${dmSans.variable} ${playfair.variable}`}>
       <body>
-        <CartProvider>{children}</CartProvider>
+        <AuthCallbackHandler>
+          <CartProvider>{children}</CartProvider>
+        </AuthCallbackHandler>
       </body>
     </html>
   );

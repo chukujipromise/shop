@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { getUser } from "@netlify/identity";
+import { db } from "../../../../db";
+import { orderItems as orderItemsTable, orders } from "../../../../db/schema";
+import { products } from "@/lib/products";
 
 type CartEntry = { productId: string; quantity: number };
 type CheckoutBody = {
@@ -16,12 +19,6 @@ function isText(value: unknown, maxLength: number) {
 }
 
 export async function POST(request: Request) {
-  const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceRoleKey) {
-    return NextResponse.json({ error: "Order storage is not configured." }, { status: 503 });
-  }
-
   let body: CheckoutBody;
   try {
     body = await request.json() as CheckoutBody;
@@ -49,50 +46,53 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "A maximum of 20 of each item can be ordered." }, { status: 400 });
   }
 
-  const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
   const productIds = [...quantities.keys()];
-  const { data: catalog, error: catalogError } = await supabase
-    .from("products")
-    .select("id, name, price")
-    .in("id", productIds)
-    .eq("active", true);
-  if (catalogError) {
-    console.error("Product lookup failed", catalogError.message);
-    return NextResponse.json({ error: "We couldn't verify your bag. Please try again." }, { status: 503 });
-  }
-  if (!catalog || catalog.length !== productIds.length) {
+  const productById = new Map(products.map((product) => [product.id, product]));
+  if (productIds.some((productId) => !productById.has(productId))) {
     return NextResponse.json({ error: "A product in your bag is no longer available." }, { status: 400 });
   }
 
-  const productById = new Map(catalog.map((product) => [product.id, product]));
   const orderItems = productIds.map((productId) => {
     const product = productById.get(productId)!;
     return { product_id: productId, product_name: product.name, unit_price: product.price, quantity: quantities.get(productId)! };
   });
-  const subtotal = orderItems.reduce((sum, item) => sum + Number(item.unit_price) * item.quantity, 0);
+  const subtotal = orderItems.reduce((sum, item) => sum + item.unit_price * item.quantity, 0);
   const shipping = subtotal >= 120 ? 0 : 8;
   const total = subtotal + shipping;
+  const user = await getUser();
 
-  const { data: orderId, error: orderError } = await supabase.rpc("create_shop_order", {
-    customer_email: body.email.trim().toLowerCase(),
-    customer_name: body.fullName.trim(),
-    shipping_address: body.address.trim(),
-    shipping_city: body.city.trim(),
-    shipping_postal_code: body.postalCode.trim(),
-    order_subtotal: subtotal,
-    shipping_amount: shipping,
-    order_total: total,
-    order_items: orderItems,
-  });
-  if (orderError || !orderId) {
-    console.error("Order creation failed", orderError?.message);
+  let orderId: string;
+  try {
+    orderId = await db.transaction(async (tx) => {
+      const [order] = await tx.insert(orders).values({
+        userId: user?.id ?? null,
+        customerEmail: body.email!.trim().toLowerCase(),
+        customerName: body.fullName!.trim(),
+        shippingAddress: body.address!.trim(),
+        shippingCity: body.city!.trim(),
+        shippingPostalCode: body.postalCode!.trim(),
+        subtotal: subtotal.toFixed(2),
+        shippingAmount: shipping.toFixed(2),
+        total: total.toFixed(2),
+      }).returning({ id: orders.id });
+      await tx.insert(orderItemsTable).values(orderItems.map((item) => ({
+        orderId: order.id,
+        productId: item.product_id,
+        productName: item.product_name,
+        unitPrice: item.unit_price.toFixed(2),
+        quantity: item.quantity,
+      })));
+      return order.id;
+    });
+  } catch (error) {
+    console.error("Order creation failed", error);
     return NextResponse.json({ error: "We couldn't save your order. Please try again." }, { status: 503 });
   }
 
   const emailSent = await sendConfirmationEmail({
     email: body.email.trim(),
-    name: body.fullName.trim(),
-    orderId: String(orderId),
+    name: body.fullName!.trim(),
+    orderId,
     items: orderItems,
     total,
   });
